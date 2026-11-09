@@ -1,0 +1,163 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+import os, json
+import joblib
+import pandas as pd
+import random
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(HERE, "model", "price_model.joblib")
+METRICS_PATH = os.path.join(HERE, "metrics.json")
+SAFETY_MODEL_PATH = os.path.join(HERE, "model", "safety_model.joblib")
+
+app = Flask(__name__)
+CORS(app)
+
+model = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
+metrics = json.load(open(METRICS_PATH)) if os.path.exists(METRICS_PATH) else {}
+safety_model = joblib.load(SAFETY_MODEL_PATH) if os.path.exists(SAFETY_MODEL_PATH) else None
+
+@app.get("/health")
+def health():
+    return {"ok": True, "model_loaded": model is not None, "safety_model_loaded": safety_model is not None}
+
+@app.get("/metrics")
+def get_metrics():
+    return jsonify(metrics)
+
+@app.post("/predict")
+def predict():
+    if model is None:
+        return jsonify({"error": "Model not trained. Run train.py first."}), 503
+
+    body = request.get_json(force=True) or {}
+
+    row = {
+        "device_brand":    body.get("device_brand", "Samsung"),
+        "os":              body.get("os", "Android"),
+        "4g":              body.get("4g", "Yes"),
+        "5g":              body.get("5g", "No"),
+        "screen_size":     float(body.get("screen_size", 6.5)),
+        "rear_camera_mp":  float(body.get("rear_camera_mp", 12)),
+        "front_camera_mp": float(body.get("front_camera_mp", 8)),
+        "internal_memory": float(body.get("internal_memory", 128)),
+        "ram":             float(body.get("ram", 6)),
+        "battery":         float(body.get("battery", 5000)),
+        "weight":          float(body.get("weight", 190)),
+        "release_year":    int(body.get("release_year", 2022)),
+        "days_used":       int(body.get("days_used", 365)),
+    }
+
+    try:
+        df = pd.DataFrame([row])
+        price = float(model.predict(df)[0])
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+    return jsonify({
+        "predicted_price": round(price, 2),
+        "min": round(price * 0.85, 2),
+        "max": round(price * 1.15, 2),
+    })
+
+@app.post("/chat")
+def chat():
+    body = request.get_json(force=True) or {}
+    message = body.get("message", "").lower()
+
+    # 1. Handle non-electronics categories
+    if "clothing" in message or "clothes" in message or "hoodie" in message or "shirt" in message:
+        reply = "We have a great 'Clothing' section! You can find university hoodies, jackets, and sneakers. Since clothing prices depend on brand and condition, just browse the category to see what other students are charging."
+        
+    elif "book" in message or "textbook" in message:
+        reply = "I can only predict prices for electronics right now! But you can browse the 'Textbooks' category to see what other students are charging."
+
+    # 2. Handle Electronics (Laptops vs Phones)
+    elif any(word in message for word in ["laptop", "computer", "pc", "macbook", "asus", "hp", "dell", "lenovo", "acer"]):
+         reply = "I see you're interested in laptops! Laptops vary wildly based on specs (RAM, SSD, Processor). Check the 'Electronics' section to compare laptops from sellers like 'Tech Hub'."
+
+    # 3. Handle Phones (Price Prediction)
+    elif "price" in message or "cost" in message or "how much" in message:
+        brand = "Smartphone"
+        if "iphone" in message or "apple" in message: brand = "Apple"
+        elif "huawei" in message: brand = "Huawei"
+        elif "tecno" in message: brand = "Tecno"
+        elif "nokia" in message: brand = "Nokia"
+        elif "itel" in message: brand = "Itel"
+        elif "samsung" in message: brand = "Samsung"
+
+        if brand == "Smartphone":
+             reply = "Which item are you asking about? I can predict prices for phones (e.g., Samsung, iPhone) or help you navigate the marketplace for clothes and books."
+        elif model is not None:
+            try:
+                row = {
+                    "device_brand": brand, "os": "Android", "4g": "Yes", "5g": "No",
+                    "screen_size": 6.5, "rear_camera_mp": 12, "front_camera_mp": 8,
+                    "internal_memory": 128, "ram": 6, "battery": 5000, "weight": 190,
+                    "release_year": 2022, "days_used": 365,
+                }
+                df = pd.DataFrame([row])
+                price = float(model.predict(df)[0])
+                reply = f"Based on my AI model, a used {brand} device with average specs should sell for around **M {price:.2f}**. You can list it on the 'Sell' page to get an exact quote!"
+            except Exception as e:
+                reply = "I can help you price that! Go to the 'Sell' page and click 'Suggest a price with AI'."
+        else:
+            reply = "My price model isn't loaded right now, but you can still try the 'Suggest a price with AI' button on the sell page."
+            
+    # 4. General questions
+    elif "blockchain" in message or "verify" in message:
+        reply = "We use a local Ethereum blockchain (Ganache) to store the SHA-256 hash of every listing. If you click 'Verify on Ganache' on a listing, you can prove it hasn't been tampered with!"
+    elif "trust" in message or "scam" in message or "safe" in message:
+        reply = "Safety is our priority. I recommend meeting in a public place on campus. Also, look for the green 'Verified' badge on listings, which means the data is secured on the blockchain."
+    elif "hello" in message or "hi" in message:
+        reply = "Hello! I am your CampusConnect AI assistant. Ask me to estimate the price of a phone, ask about laptops, or ask about our safety features!"
+    elif "sell" in message or "list" in message:
+        reply = "To sell an item, click 'Sell' in the top navigation bar. You can upload a photo, set a price, and even ask me for a price recommendation!"
+    else:
+        reply = "I can help you estimate prices for mobile phones, explain how our blockchain security works, or guide you through our categories like Clothing and Textbooks. What would you like to know?"
+
+    return jsonify({"reply": reply})
+  
+@app.get("/predictions")
+def predictions():
+    
+    if model is None:
+        return jsonify([])
+
+    df = pd.read_csv(os.path.join(HERE, "data", "data.csv"))
+    df = df.dropna(subset=["normalized_used_price"])
+    df = df[df["normalized_used_price"] > 0].copy()
+    df["price_m"] = df["normalized_used_price"] * 2500
+
+    from sklearn.model_selection import train_test_split
+    numeric_candidates = [
+        "screen_size", "rear_camera_mp", "front_camera_mp",
+        "internal_memory", "ram", "battery", "weight",
+        "release_year", "days_used",
+    ]
+    for col in numeric_candidates:
+        if col in df.columns:
+            df[col] = pd.to_numeric(
+                df[col].astype(str).str.extract(r"(-?\d+\.?\d*)")[0],
+                errors="coerce",
+            )
+    numeric = [c for c in numeric_candidates if c in df.columns]
+    categorical = [c for c in ["device_brand", "os", "4g", "5g"] if c in df.columns]
+    X = df[categorical + numeric]
+    y = df["price_m"]
+
+    _, X_test, _, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    preds = model.predict(X_test)
+
+    # Return a sample of 40 for charting
+    import numpy as np
+    idx = np.random.RandomState(42).choice(len(preds), size=min(40, len(preds)), replace=False)
+    return jsonify([
+        {"actual": round(float(y_test.iloc[i]), 2),
+         "predicted": round(float(preds[i]), 2),
+         "error": round(float(abs(preds[i] - y_test.iloc[i])), 2)}
+        for i in idx
+    ])  
+
+if __name__ == "__main__":
+    app.run(port=5000, debug=True)
