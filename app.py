@@ -13,7 +13,9 @@ METRICS_PATH = os.path.join(HERE, "metrics.json")
 SAFETY_MODEL_PATH = os.path.join(HERE, "model", "safety_model.joblib")
 
 app = Flask(__name__)
-CORS(app)
+# Allow local dev and configurable allowed origins
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+CORS(app, origins=ALLOWED_ORIGINS)
 
 model = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
 metrics = json.load(open(METRICS_PATH)) if os.path.exists(METRICS_PATH) else {}
@@ -44,25 +46,26 @@ def predict():
 
     body = request.get_json(force=True) or {}
 
-    row = {
-        "device_brand":    body.get("device_brand", "Samsung"),
-        "os":              body.get("os", "Android"),
-        "4g":              body.get("4g", "Yes"),
-        "5g":              body.get("5g", "No"),
-        "screen_size":     float(body.get("screen_size", 6.5)),
-        "rear_camera_mp":  float(body.get("rear_camera_mp", 12)),
-        "front_camera_mp": float(body.get("front_camera_mp", 8)),
-        "internal_memory": float(body.get("internal_memory", 128)),
-        "ram":             float(body.get("ram", 6)),
-        "battery":         float(body.get("battery", 5000)),
-        "weight":          float(body.get("weight", 190)),
-        "release_year":    int(body.get("release_year", 2022)),
-        "days_used":       int(body.get("days_used", 365)),
-    }
-
     try:
+        row = {
+            "device_brand":    str(body.get("device_brand", "Samsung")),
+            "os":              str(body.get("os", "Android")),
+            "4g":              str(body.get("4g", "Yes")),
+            "5g":              str(body.get("5g", "No")),
+            "screen_size":     float(body.get("screen_size", 6.5)),
+            "rear_camera_mp":  float(body.get("rear_camera_mp", 12)),
+            "front_camera_mp": float(body.get("front_camera_mp", 8)),
+            "internal_memory": float(body.get("internal_memory", 128)),
+            "ram":             float(body.get("ram", 6)),
+            "battery":         float(body.get("battery", 5000)),
+            "weight":          float(body.get("weight", 190)),
+            "release_year":    int(body.get("release_year", 2022)),
+            "days_used":       int(body.get("days_used", 365)),
+        }
         df = pd.DataFrame([row])
         price = float(model.predict(df)[0])
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": f"Invalid input parameters: {str(e)}"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 
@@ -110,7 +113,7 @@ def chat():
         else:
             reply = "My price model isn't loaded right now, but you can still try the 'Suggest a price with AI' button on the sell page."
     elif "blockchain" in message or "verify" in message:
-        reply = "We use a local Ethereum blockchain (Ganache) to store the SHA-256 hash of every listing. If you click 'Verify on Ganache' on a listing, you can prove it hasn't been tampered with!"
+        reply = "We use the Ethereum Sepolia testnet to store the SHA-256 cryptographic hash of listings and transactions. You can connect MetaMask to anchor transactions or click 'Verify on Sepolia' on any listing to verify it hasn't been tampered with!"
     elif "trust" in message or "scam" in message or "safe" in message:
         reply = "Safety is our priority. I recommend meeting in a public place on campus. Also, look for the green 'Verified' badge on listings, which means the data is secured on the blockchain."
     elif "hello" in message or "hi" in message:
@@ -180,4 +183,6 @@ def anchor():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(port=5000, debug=True)
+    debug_mode = os.environ.get("FLASK_DEBUG", "0").lower() in ("1", "true")
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=debug_mode)

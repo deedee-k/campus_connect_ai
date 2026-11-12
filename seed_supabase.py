@@ -13,7 +13,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 df = pd.read_csv(os.path.join(HERE, "data", "listings_seed.csv"))
 
 
-seller = supabase.table("profiles").select("id, name").eq("email", "majaramasupha221@gmail.com").single().execute()
+SELLER_EMAIL = os.environ.get("SELLER_EMAIL", "seller@example.com")
+seller = supabase.table("profiles").select("id, name").eq("email", SELLER_EMAIL).single().execute()
 SELLER_ID = "03715e1e-e0fe-4452-a428-7604fbd1046e"  
 seller_id = seller.data["id"]
 seller_name = seller.data["name"]

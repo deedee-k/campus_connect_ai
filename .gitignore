@@ -1,1 +1,21 @@
+# Python cache & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files & secrets
+.env
+.env.*
+!.env.example
+
+# Large datasets & local models (if downloaded locally)
 data/
+
+# OS and IDE files
+.DS_Store
+.vscode/
+.idea/
