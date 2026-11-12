@@ -4,6 +4,8 @@ import os, json
 import joblib
 import pandas as pd
 import random
+import numpy as np
+from web3 import Web3 # NEW: Web3 for backend wallet
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH = os.path.join(HERE, "model", "price_model.joblib")
@@ -16,6 +18,16 @@ CORS(app)
 model = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
 metrics = json.load(open(METRICS_PATH)) if os.path.exists(METRICS_PATH) else {}
 safety_model = joblib.load(SAFETY_MODEL_PATH) if os.path.exists(SAFETY_MODEL_PATH) else None
+
+# ─── BLOCKCHAIN BACKEND WALLET SETUP ──────────────────────────────────
+SEPOLIA_RPC = "https://rpc.sepolia.org"
+CONTRACT_ADDRESS = "0x0aCCE10AC00dd05aF572E4fe54c175446DB0b41a" # Your Sepolia Contract
+BACKEND_WALLET_KEY = os.environ.get("BACKEND_WALLET_KEY")
+
+w3 = Web3(Web3.HTTPProvider(SEPOLIA_RPC))
+
+CONTRACT_ABI = [{"inputs":[{"internalType":"bytes32","name":"refId","type":"bytes32"},{"internalType":"bytes32","name":"contentHash","type":"bytes32"}],"name":"anchor","outputs":[],"stateMutability":"nonpayable","type":"function"}]
+# ──────────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
@@ -65,18 +77,12 @@ def chat():
     body = request.get_json(force=True) or {}
     message = body.get("message", "").lower()
 
-    # 1. Handle non-electronics categories
     if "clothing" in message or "clothes" in message or "hoodie" in message or "shirt" in message:
         reply = "We have a great 'Clothing' section! You can find university hoodies, jackets, and sneakers. Since clothing prices depend on brand and condition, just browse the category to see what other students are charging."
-        
     elif "book" in message or "textbook" in message:
         reply = "I can only predict prices for electronics right now! But you can browse the 'Textbooks' category to see what other students are charging."
-
-    # 2. Handle Electronics (Laptops vs Phones)
     elif any(word in message for word in ["laptop", "computer", "pc", "macbook", "asus", "hp", "dell", "lenovo", "acer"]):
          reply = "I see you're interested in laptops! Laptops vary wildly based on specs (RAM, SSD, Processor). Check the 'Electronics' section to compare laptops from sellers like 'Tech Hub'."
-
-    # 3. Handle Phones (Price Prediction)
     elif "price" in message or "cost" in message or "how much" in message:
         brand = "Smartphone"
         if "iphone" in message or "apple" in message: brand = "Apple"
@@ -103,8 +109,6 @@ def chat():
                 reply = "I can help you price that! Go to the 'Sell' page and click 'Suggest a price with AI'."
         else:
             reply = "My price model isn't loaded right now, but you can still try the 'Suggest a price with AI' button on the sell page."
-            
-    # 4. General questions
     elif "blockchain" in message or "verify" in message:
         reply = "We use a local Ethereum blockchain (Ganache) to store the SHA-256 hash of every listing. If you click 'Verify on Ganache' on a listing, you can prove it hasn't been tampered with!"
     elif "trust" in message or "scam" in message or "safe" in message:
@@ -120,15 +124,9 @@ def chat():
   
 @app.get("/predictions")
 def predictions():
-    # If the model is missing, return empty
     if model is None:
         return jsonify([])
 
-    # Instead of reading data.csv (which isn't on GitHub), 
-    # we generate a realistic sample of predictions for the chart
-    import numpy as np
-    
-    # Generate 40 random realistic errors between M 50 and M 1500
     np.random.seed(42) 
     errors = np.random.uniform(50, 1500, 40)
     
@@ -140,7 +138,46 @@ def predictions():
             "error": round(float(error), 2)
         })
         
-    return jsonify(result)  
+    return jsonify(result)
+
+# ─── NEW: BLOCKCHAIN ANCHOR ROUTE ─────────────────────────────────────
+@app.post("/anchor")
+def anchor():
+    body = request.get_json(force=True) or {}
+    ref_id = body.get("refId")
+    content_hash = body.get("contentHash")
+    
+    if not BACKEND_WALLET_KEY:
+        return jsonify({"error": "Backend wallet private key not configured on server."}), 500
+        
+    if not ref_id or not content_hash:
+        return jsonify({"error": "Missing refId or contentHash"}), 400
+        
+    try:
+        account = w3.eth.account.from_key(BACKEND_WALLET_KEY)
+        contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=CONTRACT_ABI)
+        
+        # Convert strings to bytes32 for the smart contract
+        ref_id_bytes = w3.keccak(text=ref_id)
+        hash_bytes = bytes.fromhex(content_hash.replace("0x", "").ljust(64, '0'))
+        
+        # Build transaction
+        nonce = w3.eth.get_transaction_count(account.address)
+        tx = contract.functions.anchor(ref_id_bytes, hash_bytes).build_transaction({
+            'from': account.address,
+            'nonce': nonce,
+            'gas': 200000,
+            'gasPrice': w3.eth.gas_price
+        })
+        
+        # Sign and send
+        signed_tx = w3.eth.account.sign_transaction(tx, BACKEND_WALLET_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        
+        return jsonify({"success": True, "txHash": tx_hash.hex()})
+    except Exception as e:
+        print(f"Blockchain Error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(port=5000, debug=True)
